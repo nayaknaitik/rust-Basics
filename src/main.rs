@@ -1,73 +1,155 @@
-use actix_web::{
-    get,
-    post,
-    web,
-    App,
-    HttpResponse,
-    HttpServer,
-    Responder,
-};
-
-use tracing::{error, info, warn};
+use actix_web::{App, HttpResponse, HttpServer, Responder, delete, get, post, put, web};
+use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
+use tracing::info;
 use tracing_actix_web::TracingLogger;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt as subscriber_fmt};
 
-#[get("/")]
-async fn hello() -> impl Responder {
-    println!("Hello point called !!");
-    info!("GET / endpoint called");
-    
-    HttpResponse::Ok().body("Hello world !")
+// 1. The Todo model.
+// Serialize: Converts Struct -> JSON (for sending responses).
+// Deserialize: Converts JSON -> Struct (for reading requests).
+#[derive(Serialize, Deserialize, Clone)]
+struct Todo {
+    id: u32,
+    title: String,
+    completed: bool,
 }
 
-#[get("/price/{symbol}")]
-async fn get_symbol()-> impl Responder {
-    HttpResponse::Ok().body("Helgog{symbol}")
+// Struct representing the request body when creating a new Todo.
+#[derive(Deserialize)]
+struct CreateTodo {
+    title: String,
 }
 
-#[post("/echo")]
-async fn echo(req_body: String) -> impl Responder {
-    info!("POST /echo endpoint called");
-
-    HttpResponse::Ok().body(req_body)
+// Struct representing the request body when updating a Todo.
+#[derive(Deserialize)]
+struct UpdateTodo {
+    title: Option<String>,
+    completed: Option<bool>,
 }
 
-async fn auto_hello() -> impl Responder {
-    warn!("GET /hey endpoint called");
-
-    HttpResponse::Ok().body("Hello from Naitik")
-}
-#[get("/get_g")]
-async fn my_function_for_greeting() -> impl Responder{
-    HttpResponse::Ok().body("Send the response on the new route")
+// 2. Shared State.
+// Actix Web is multi-threaded. We wrap our data in a Mutex so threads can access it safely.
+struct AppState {
+    todos: Mutex<Vec<Todo>>,
 }
 
-#[get("/health")]
-async fn get_health()-> impl Responder {
-    HttpResponse::Ok().body("server is running good")
+// 3. HANDLERS (endpoints)
+
+// GET /todos - List all todos
+#[get("/todos")]
+async fn get_todos(data: web::Data<AppState>) -> impl Responder {
+    let todos = data.todos.lock().unwrap();
+    HttpResponse::Ok().json(&*todos)
 }
 
+// GET /todos/{id} - Get a single todo by ID
+#[get("/todos/{id}")]
+async fn get_todo_by_id(path: web::Path<u32>, data: web::Data<AppState>) -> impl Responder {
+    let todos = data.todos.lock().unwrap();
+    let id = path.into_inner();
+
+    if let Some(todo) = todos.iter().find(|t| t.id == id) {
+        HttpResponse::Ok().json(todo)
+    } else {
+        HttpResponse::NotFound().body("Todo not found")
+    }
+}
+
+// POST /todos - Create a new todo
+#[post("/todos")]
+async fn create_todo(new_todo: web::Json<CreateTodo>, data: web::Data<AppState>) -> impl Responder {
+    let mut todos = data.todos.lock().unwrap();
+
+    // Generate a simple ID
+    let new_id = todos.last().map(|t| t.id + 1).unwrap_or(1);
+
+    let todo = Todo {
+        id: new_id,
+        title: new_todo.title.clone(),
+        completed: false,
+    };
+
+    todos.push(todo.clone());
+    HttpResponse::Created().json(todo)
+}
+
+// PUT /todos/{id} - Update an existing todo
+#[put("/todos/{id}")]
+async fn update_todo(
+    path: web::Path<u32>,
+    updated_fields: web::Json<UpdateTodo>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let mut todos = data.todos.lock().unwrap();
+    let id = path.into_inner();
+
+    if let Some(todo) = todos.iter_mut().find(|t| t.id == id) {
+        if let Some(ref title) = updated_fields.title {
+            todo.title = title.clone();
+        }
+        if let Some(completed) = updated_fields.completed {
+            todo.completed = completed;
+        }
+        HttpResponse::Ok().json(todo)
+    } else {
+        HttpResponse::NotFound().body("Todo not found")
+    }
+}
+
+// DELETE /todos/{id} - Delete a todo
+#[delete("/todos/{id}")]
+async fn delete_todo(path: web::Path<u32>, data: web::Data<AppState>) -> impl Responder {
+    let mut todos = data.todos.lock().unwrap();
+    let id = path.into_inner();
+
+    let initial_len = todos.len();
+    todos.retain(|t| t.id != id);
+
+    if todos.len() < initial_len {
+        HttpResponse::Ok().body("Todo deleted successfully")
+    } else {
+        HttpResponse::NotFound().body("Todo not found")
+    }
+}
+
+// 4. MAIN FUNCTION
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Initialize logging
-    fmt()
+    subscriber_fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    info!("==================================");
-    info!("🚀 Actix Server Starting...");
-    info!("Listening on http://127.0.0.1:8080");
-    info!("==================================");
+    info!("🚀 Actix CRUD Server Starting on http://127.0.0.1:8080");
 
-    HttpServer::new(|| {
+    // Initialize our shared in-memory database
+    let app_state = web::Data::new(AppState {
+        todos: Mutex::new(vec![
+            Todo {
+                id: 1,
+                title: "Learn Rust".to_string(),
+                completed: false,
+            },
+            Todo {
+                id: 2,
+                title: "Build an Actix Web app".to_string(),
+                completed: false,
+            },
+        ]),
+    });
+
+    HttpServer::new(move || {
         App::new()
-            // Automatically log every request
             .wrap(TracingLogger::default())
-            .service(hello)
-            .service(echo)
-            .service(my_function_for_greeting)
-            .service(get_health)
-            .route("/hey", web::get().to(auto_hello))
+            // Register shared state so handlers can access it
+            .app_data(app_state.clone())
+            // Register services/endpoints
+            .service(get_todos)
+            .service(get_todo_by_id)
+            .service(create_todo)
+            .service(update_todo)
+            .service(delete_todo)
     })
     .bind(("127.0.0.1", 8080))?
     .run()
