@@ -74,6 +74,11 @@ async fn create_todo(new_todo: web::Json<CreateTodo>, data: web::Data<AppState>)
     HttpResponse::Created().json(todo)
 }
 
+#[post("/check/health")]
+async fn check_health() -> impl Responder {
+    HttpResponse::Ok().body("Health is good and server is running fine")
+}
+
 // PUT /todos/{id} - Update an existing todo
 #[put("/todos/{id}")]
 async fn update_todo(
