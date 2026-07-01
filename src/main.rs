@@ -42,6 +42,11 @@ async fn get_todos(data: web::Data<AppState>) -> impl Responder {
     let todos = data.todos.lock().unwrap();
     HttpResponse::Ok().json(&*todos)
 }
+#[get("todos/getting")]
+async fn greeting(data: web::Data<AppState>) -> impl Responder {
+    let todo = data.todos.lock().unwrap();
+    HttpResponse::Ok().json(&*todo)
+}
 
 // GET /todos/{id} - Get a single todo by ID
 #[get("/todos/{id}")]
